@@ -17,7 +17,8 @@
 #include "icons.h"
 
 // ---------- 固件发布地址（GitHub Pages）----------
-#define FW_BASE_URL "https://huwenhou.github.io/ESP32-EINK42-BW-RECIPE-OTA"
+#define FW_BASE_URL     "https://io.huwenhou.com/ESP32-EINK42-BW-RECIPE-OTA"
+#define FW_FALLBACK_URL "https://huwenhou.github.io/ESP32-EINK42-BW-RECIPE-OTA"   // 主地址连不上时用
 const unsigned long OTA_INTERVAL_MS  = 10UL * 60UL * 1000UL;  // 10 分钟查一次新版本
 const unsigned long TIME_INTERVAL_MS = 60UL * 1000UL;         // 每分钟看一次是否跨天
 
@@ -214,47 +215,37 @@ void refreshIfNewDay(bool force = false) {
 // ---------------------------------------------------------------------
 //  OTA
 // ---------------------------------------------------------------------
-long fetchRemoteVersion() {
+// 依次尝试主地址（自定义域名）和备用地址（github.io），返回可用地址的版本号
+const char* OTA_BASES[] = { FW_BASE_URL, FW_FALLBACK_URL };
+long fetchRemoteVersion(const char* base) {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);   // 换自定义域名后旧地址会 301 跳转
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(15000);
-  String url = String(FW_BASE_URL) + "/version.txt?t=" + String(millis());
+  String url = String(base) + "/version.txt?t=" + String(millis());
   if (!http.begin(client, url)) return -1;
   long v = -1;
   int code = http.GET();
-  if (code == 200) {
-    String body = http.getString();
-    body.trim();
-    v = body.toInt();
-  } else {
-    Serial.printf("version.txt HTTP %d\n", code);
-  }
+  if (code == 200) { String b = http.getString(); b.trim(); v = b.toInt(); }
+  else Serial.printf("%s version.txt HTTP %d\n", base, code);
   http.end();
   return v;
 }
-
 void checkForUpdate() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.reconnect();
-    return;
-  }
-  long remote = fetchRemoteVersion();
-  Serial.printf("local v%d, remote v%ld\n", FW_VERSION, remote);
-  if (remote <= FW_VERSION) return;
-
-  Serial.println("New firmware found, updating...");
-  WiFiClientSecure client;
-  client.setInsecure();
-  httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  httpUpdate.rebootOnUpdate(true);
-  t_httpUpdate_return r =
-      httpUpdate.update(client, String(FW_BASE_URL) + "/firmware.bin");
-  if (r == HTTP_UPDATE_FAILED) {
-    Serial.printf("Update failed (%d): %s\n",
-                  httpUpdate.getLastError(),
-                  httpUpdate.getLastErrorString().c_str());
+  if (WiFi.status() != WL_CONNECTED) { WiFi.reconnect(); return; }
+  for (const char* base : OTA_BASES) {
+    long remote = fetchRemoteVersion(base);
+    Serial.printf("local v%d, remote v%ld (%s)\n", FW_VERSION, remote, base);
+    if (remote < 0) continue;            // 这个地址连不上，换下一个
+    if (remote <= FW_VERSION) return;    // 已是最新
+    WiFiClientSecure client;
+    client.setInsecure();
+    httpUpdate.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    httpUpdate.rebootOnUpdate(true);
+    if (httpUpdate.update(client, String(base) + "/firmware.bin") == HTTP_UPDATE_FAILED)
+      Serial.printf("Update failed: %s\n", httpUpdate.getLastErrorString().c_str());
+    else return;
   }
 }
 
